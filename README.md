@@ -27,18 +27,33 @@ havok-go/
 
 ## 编译
 
-> 依赖 Go 1.23+，tree-sitter 绑定需要 CGo（需安装 C 编译器）。
+> 依赖 Go 1.23+，tree-sitter 绑定需要 CGo（需安装 C 编译器，如 TDM-GCC、MinGW-w64 等）。
 
 ```bash
 # 下载依赖
 go mod download
 
-# 编译为可执行文件
-go build -o havok-go .
+# 编译为可执行文件（Windows + TDM-GCC 必须加 -ldflags "-linkmode internal"）
+go build -ldflags "-linkmode internal" -o havok-go.exe .
 
 # 或直接运行（无需单独编译）
 go run . <子命令>
 ```
+
+> **Windows CGo 注意事项**
+>
+> 本项目通过 CGo 使用 [tree-sitter](https://tree-sitter.github.io/) 解析 TypeScript。
+> 在 Windows 上使用 TDM-GCC（`--enable-threads=posix` / winpthread 变体）时，
+> 默认的外部链接器（`ld`）会向 PE 可执行文件注入 `.CRT`、`.tls` 等节区，
+> 与 Go 1.21+ 运行时的 SEH（结构化异常处理）机制冲突，导致编译出的 `.exe` 无法运行。
+>
+> **修复**：添加 `-ldflags "-linkmode internal"` 强制使用 Go 内置链接器，完全绕过 `ld`。
+>
+> 已提供 `build.cmd` 脚本（Windows）封装了该参数，直接运行即可：
+>
+> ```bat
+> build.cmd
+> ```
 
 ---
 
