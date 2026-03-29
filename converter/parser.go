@@ -46,7 +46,7 @@ func Parse(path string) (*Schema, error) {
 	defer tree.Close()
 
 	s := &Schema{
-		typeMap: make(map[string]*TypeAlias),
+		typeMap: make(map[string]TypeAlias),
 		enumSet: make(map[string]bool),
 	}
 	root := tree.RootNode()
@@ -139,7 +139,7 @@ func (s *Schema) parseTypeAlias(n *sitter.Node, src []byte) {
 	}
 
 	s.Types = append(s.Types, *alias)
-	s.typeMap[name] = &s.Types[len(s.Types)-1]
+	s.typeMap[name] = *alias // store by value; pointer into s.Types would become stale after realloc
 }
 
 func (s *Schema) parseEnum(n *sitter.Node, src []byte) {
@@ -255,6 +255,10 @@ func (s *Schema) resolveType(n *sitter.Node, src []byte) TSType {
 		}
 
 	case "type_identifier":
+		// bigint is parsed as type_identifier in some grammar versions, not predefined_type.
+		if text == "bigint" {
+			return TSType{Raw: text, Kind: KindBigInt}
+		}
 		if s.enumSet[text] {
 			return TSType{Raw: text, Kind: KindEnum}
 		}
@@ -331,19 +335,26 @@ func (s *Schema) IsTuple(t TSType) bool {
 	return false
 }
 
-// AllocSizeOf returns the estimated WASM memory footprint of t in bytes.
-// This is used to allocate sret buffers and parameter buffers.
+// AllocSizeOf returns the WASM memory footprint of t in bytes.
+// All Havok scalar numbers are f32 (4 bytes), not f64.
 func (s *Schema) AllocSizeOf(t TSType) uint32 {
 	switch t.Kind {
 	case KindNumber:
-		return 8 // f64
+		return 4 // f32 (Havok uses 32-bit floats internally)
 	case KindBigInt:
 		return 8 // i64
 	case KindBoolean, KindEnum:
 		return 4 // i32
 	case KindTupleAlias:
 		if alias, ok := s.typeMap[t.Raw]; ok {
+			if alias.IsHandle {
+				return 8 // i64 handle
+			}
 			return s.tupleSize(alias.Tuple)
+		}
+		// Fallback: HP_*Id naming convention → 8 bytes (i64 handle).
+		if strings.HasPrefix(t.Raw, "HP_") && strings.HasSuffix(t.Raw, "Id") {
+			return 8
 		}
 		if len(t.Elements) > 0 {
 			return s.tupleSize(t.Elements)

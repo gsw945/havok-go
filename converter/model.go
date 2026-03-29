@@ -51,7 +51,7 @@ type Method struct {
 type Schema struct {
 	Enums   []EnumDecl
 	Types   []TypeAlias
-	typeMap map[string]*TypeAlias // name → alias
+	typeMap map[string]TypeAlias // name → alias (value copy, not pointer—prevents stale pointers after slice realloc)
 	enumSet map[string]bool
 	Methods []Method
 }

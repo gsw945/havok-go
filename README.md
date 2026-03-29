@@ -9,20 +9,27 @@ Go 版 [Havok 物理引擎](https://github.com/BabylonJS/havok) 绑定，通过 
 ```
 havok-go/
 ├── main.go              # CLI 入口
+├── build.cmd            # Windows 一键编译（含 -linkmode internal）
+├── convert.cmd          # Windows 一键运行 convert（生成绑定代码）
+├── example.cmd          # Windows 一键运行 example（物理仿真演示）
 ├── cmd/                 # Cobra 子命令（convert / example）
 ├── converter/           # TypeScript d.ts 解析 & Go 代码生成器
 │   ├── model.go         # 数据模型
 │   ├── parser.go        # tree-sitter 解析器 + 类型辅助方法
 │   └── generator.go     # 代码生成模板
-└── havok/               # Havok WASM 绑定（子模块）
-    ├── havok.go         # HavokPhysics 初始化 & 所有 HP_* 方法
-    ├── types.go         # 共用类型（Result、Vector3、Quaternion 等）
-    ├── memory.go        # WASM 内存读写工具
+└── havok/               # Havok WASM 绑定（独立子模块）
+    ├── havok.go         # HavokPhysics 初始化（嵌入 *generated.HP）
+    ├── types.go         # 从 binding 包 re-export 的类型别名
     ├── imports.go       # emscripten env 桩函数
-    ├── wasm/
-    │   ├── wasm.go      # //go:embed HavokPhysics.wasm
-    │   └── HavokPhysics.wasm  # 真实 wasm（由 convert 命令写入）
-    └── generated/       # convert 命令生成的脚手架代码
+    ├── binding/         # 手写基础设施（不可删除）
+    │   ├── binding.go   # Binding struct + Alloc/FreePtr/Mem/CallResultI32
+    │   ├── helpers.go   # WASM 内存读写工具（ReadU64、WriteVector3 等）
+    │   └── types.go     # 所有类型定义（HP_*Id、枚举、Vector3 等）
+    ├── generated/       # convert 命令自动生成（可删除后重新生成）
+    │   └── bindings_gen.go  # HP struct + 全部 130 个 HP_* 方法
+    └── wasm/
+        ├── wasm.go      # //go:embed HavokPhysics.wasm
+        └── HavokPhysics.wasm  # 真实 wasm（由 convert 命令写入）
 ```
 
 ---
@@ -79,12 +86,26 @@ npm install
 
 ### 2. 运行 convert 命令
 
+**Windows 一键运行（推荐）：**
+
+```bat
+REM 使用默认 d.ts 路径（../BabylonJS-havok/packages/havok/HavokPhysics.d.ts）
+convert.cmd
+
+REM 手动指定路径
+convert.cmd --input path\to\HavokPhysics.d.ts
+```
+
+**跨平台（go run）：**
+
 ```bash
 # 默认输出到 ./havok/generated/，并自动将 wasm 复制到 ./havok/wasm/
-go run . convert --input ../BabylonJS-havok/packages/havok/HavokPhysics.d.ts
+# 注意：convert 命令使用 go build tag gen_only，不需要编译 havok 包本身
+go run -tags gen_only . convert --skip-types \
+  --input ../BabylonJS-havok/packages/havok/HavokPhysics.d.ts
 
 # 如果 wasm 文件在非标准位置，用 --wasm 手动指定
-go run . convert \
+go run -tags gen_only . convert --skip-types \
   --input ../BabylonJS-havok/packages/havok/HavokPhysics.d.ts \
   --wasm  ../BabylonJS-havok/packages/havok/lib/esm/HavokPhysics.wasm
 ```
@@ -106,6 +127,9 @@ Copied wasm: ../BabylonJS-havok/packages/havok/lib/esm/HavokPhysics.wasm
 | `--input` / `-i` | （必填）| `HavokPhysics.d.ts` 路径 |
 | `--output` / `-o` | `./havok/generated` | 生成文件的输出目录 |
 | `--package` / `-p` | `generated` | 生成文件的 Go 包名 |
+| `--skip-types` | `false` | 跳过生成 `types_gen.go`（类型已在 `binding/` 中定义时使用）|
+| `--receiver` | `HP` | 生成方法的接收器类型名 |
+| `--binding-pkg` | `github.com/gsw945/havok-go/havok/binding` | 手写 binding 包的 import 路径 |
 | `--wasm` / `-w` | （自动搜索）| 指定 wasm 文件路径 |
 
 ---
@@ -113,6 +137,17 @@ Copied wasm: ../BabylonJS-havok/packages/havok/lib/esm/HavokPhysics.wasm
 ## 运行示例
 
 `example` 命令演示了一个完整的物理仿真流程：创建世界、添加刚体、施加重力、步进模拟、释放资源。
+
+**Windows 一键运行：**
+
+```bat
+example.cmd
+
+REM 手动指定 wasm 路径
+example.cmd --wasm path\to\HavokPhysics.wasm
+```
+
+**跨平台（go run）：**
 
 ```bash
 # 使用 havok/wasm/ 中内嵌的 wasm（先执行 convert 写入真实 wasm）
@@ -186,13 +221,13 @@ defer hp.Close()
 res, worldId, err := hp.HP_World_Create(ctx)
 
 // 2. 设置重力
-hp.HP_World_SetGravity(ctx, worldId, havok.Vector3{X: 0, Y: -9.81, Z: 0})
+hp.HP_World_SetGravity(ctx, worldId, havok.Vector3{0, -9.81, 0})
 
 // 3. 创建刚体
 res, bodyId, err := hp.HP_Body_Create(ctx)
 
-// 4. 创建形状（球体）
-center := havok.Vector3{X: 0, Y: 10, Z: 0}
+// 4. 创建形状（球体，中心 [0, 10, 0]，半径 1.0）
+center := havok.Vector3{0, 10, 0}
 res, shapeId, err := hp.HP_Shape_CreateSphere(ctx, center, 1.0)
 
 // 5. 绑定形状 & 设置运动类型（动态刚体）

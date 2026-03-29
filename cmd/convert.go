@@ -11,10 +11,13 @@ import (
 )
 
 var (
-	convertInput   string
-	convertOutput  string
-	convertPackage string
-	convertWasm    string
+	convertInput      string
+	convertOutput     string
+	convertPackage    string
+	convertWasm       string
+	convertSkipTypes  bool
+	convertReceiver   string
+	convertBindingPkg string
 )
 
 var convertCmd = &cobra.Command{
@@ -50,6 +53,9 @@ generated code is a drop-in skeleton for a complete wazero binding.`,
 		opts := converter.DefaultOptions()
 		opts.PackageName = convertPackage
 		opts.OutputDir = convertOutput
+		opts.SkipTypes = convertSkipTypes
+		opts.ReceiverType = convertReceiver
+		opts.BindingPkg = convertBindingPkg
 
 		if err := converter.Generate(schema, opts); err != nil {
 			return fmt.Errorf("generate error: %w", err)
@@ -136,9 +142,16 @@ func init() {
 	convertCmd.Flags().StringVarP(&convertInput, "input", "i", "",
 		"Path to HavokPhysics.d.ts (required)")
 	convertCmd.Flags().StringVarP(&convertOutput, "output", "o", "./havok/generated",
-		"Directory for generated files")
+		"Directory for generated files (default: ./havok/generated)")
 	convertCmd.Flags().StringVarP(&convertPackage, "package", "p", "generated",
 		"Go package name for generated files")
 	convertCmd.Flags().StringVarP(&convertWasm, "wasm", "w", "",
 		"Path to HavokPhysics.wasm to copy into havok/wasm/ (auto-searched if not set)")
+	convertCmd.Flags().BoolVar(&convertSkipTypes, "skip-types", false,
+		"Skip generating types_gen.go (use when types are already defined in the package)")
+	convertCmd.Flags().StringVar(&convertReceiver, "receiver", "HP",
+		"Go type name used as the method receiver in generated bindings")
+	convertCmd.Flags().StringVar(&convertBindingPkg, "binding-pkg",
+		"github.com/gsw945/havok-go/havok/binding",
+		"Import path of the hand-written binding package (types + infrastructure)")
 }

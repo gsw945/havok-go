@@ -1,3 +1,5 @@
+//go:build !gen_only
+
 package cmd
 
 import (
