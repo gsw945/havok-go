@@ -3,10 +3,10 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/gsw945/havok-go/havok"
+	havokwasm "github.com/gsw945/havok-go/havok/wasm"
 	"github.com/spf13/cobra"
 )
 
@@ -36,44 +36,25 @@ func init() {
 
 	exampleCmd.Flags().StringVarP(&exampleWasm, "wasm", "w",
 		"",
-		"Path to HavokPhysics.wasm (tries several default locations if not set)")
-}
-
-// defaultWasmPaths contains common relative locations for HavokPhysics.wasm.
-var defaultWasmPaths = []string{
-	"HavokPhysics.wasm",
-	"../BabylonJS-havok/packages/havok/lib/esm/HavokPhysics.wasm",
-	"../BabylonJS-havok/packages/havok/lib/umd/HavokPhysics.wasm",
-}
-
-func resolveWasm(flagPath string) (string, error) {
-	if flagPath != "" {
-		return flagPath, nil
-	}
-	for _, p := range defaultWasmPaths {
-		if fileExists(p) {
-			return p, nil
-		}
-	}
-	return "", fmt.Errorf("HavokPhysics.wasm not found; pass --wasm <path>")
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
+		"Path to HavokPhysics.wasm (uses embedded wasm when omitted)")
 }
 
 func runExample(ctx context.Context, wasmFlag string) error {
-	wasmPath, err := resolveWasm(wasmFlag)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("Loading WASM: %s\n", wasmPath)
-
 	start := time.Now()
-	hp, err := havok.New(ctx, wasmPath)
+	var hp *havok.HavokPhysics
+	var err error
+
+	if wasmFlag != "" {
+		fmt.Printf("Loading WASM (flag): %s\n", wasmFlag)
+		hp, err = havok.New(ctx, wasmFlag)
+	} else if havokwasm.IsReal() {
+		fmt.Println("Loading WASM (embedded)")
+		hp, err = havok.NewFromBytes(ctx, havokwasm.WasmBytes)
+	} else {
+		return fmt.Errorf("no HavokPhysics.wasm available; run 'havok-go convert' or pass --wasm <path>")
+	}
 	if err != nil {
-		return fmt.Errorf("havok.New: %w", err)
+		return fmt.Errorf("havok init: %w", err)
 	}
 	defer hp.Close()
 	fmt.Printf("WASM loaded in %v\n\n", time.Since(start))

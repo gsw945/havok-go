@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/gsw945/havok-go/converter"
 	"github.com/spf13/cobra"
@@ -55,8 +57,62 @@ generated code is a drop-in skeleton for a complete wazero binding.`,
 		typesPath := convertOutput + "/" + opts.TypesFile
 		bindPath := convertOutput + "/" + opts.BindingFile
 		fmt.Printf("Generated:\n  %s\n  %s\n", typesPath, bindPath)
+
+		// Try to copy HavokPhysics.wasm into havok/wasm/ alongside the generated Go files.
+		wasmDest := filepath.Join(filepath.Dir(convertOutput), "wasm", "HavokPhysics.wasm")
+		if err := copyWasm(convertInput, wasmDest); err != nil {
+			fmt.Printf("Note: %v\n", err)
+			fmt.Printf("      Copy HavokPhysics.wasm manually to: %s\n", wasmDest)
+		}
 		return nil
 	},
+}
+
+// copyWasm locates HavokPhysics.wasm relative to the input .d.ts file and
+// copies it to dest.  Returns an error (informational) if wasm cannot be found.
+func copyWasm(inputDts, dest string) error {
+	inputDir := filepath.Dir(inputDts)
+	candidates := []string{
+		filepath.Join(inputDir, "HavokPhysics.wasm"),
+		filepath.Join(inputDir, "lib", "esm", "HavokPhysics.wasm"),
+		filepath.Join(inputDir, "lib", "umd", "HavokPhysics.wasm"),
+		filepath.Join(inputDir, "..", "lib", "esm", "HavokPhysics.wasm"),
+		filepath.Join(inputDir, "..", "lib", "umd", "HavokPhysics.wasm"),
+	}
+
+	var src string
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			src = c
+			break
+		}
+	}
+	if src == "" {
+		return fmt.Errorf("HavokPhysics.wasm not found near %s", inputDts)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return fmt.Errorf("cannot create wasm directory: %w", err)
+	}
+
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("cannot open %s: %w", src, err)
+	}
+	defer in.Close()
+
+	out, err := os.Create(dest)
+	if err != nil {
+		return fmt.Errorf("cannot create %s: %w", dest, err)
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return fmt.Errorf("copy failed: %w", err)
+	}
+
+	fmt.Printf("Copied wasm: %s\n  → %s\n", src, dest)
+	return nil
 }
 
 func init() {
@@ -64,7 +120,7 @@ func init() {
 
 	convertCmd.Flags().StringVarP(&convertInput, "input", "i", "",
 		"Path to HavokPhysics.d.ts (required)")
-	convertCmd.Flags().StringVarP(&convertOutput, "output", "o", "./generated",
+	convertCmd.Flags().StringVarP(&convertOutput, "output", "o", "./havok/generated",
 		"Directory for generated files")
 	convertCmd.Flags().StringVarP(&convertPackage, "package", "p", "generated",
 		"Go package name for generated files")
