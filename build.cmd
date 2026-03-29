@@ -1,0 +1,1 @@
+go build -o havok-go.exe main.go
