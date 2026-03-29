@@ -14,6 +14,7 @@ var (
 	convertInput   string
 	convertOutput  string
 	convertPackage string
+	convertWasm    string
 )
 
 var convertCmd = &cobra.Command{
@@ -60,7 +61,7 @@ generated code is a drop-in skeleton for a complete wazero binding.`,
 
 		// Try to copy HavokPhysics.wasm into havok/wasm/ alongside the generated Go files.
 		wasmDest := filepath.Join(filepath.Dir(convertOutput), "wasm", "HavokPhysics.wasm")
-		if err := copyWasm(convertInput, wasmDest); err != nil {
+		if err := copyWasm(convertInput, convertWasm, wasmDest); err != nil {
 			fmt.Printf("Note: %v\n", err)
 			fmt.Printf("      Copy HavokPhysics.wasm manually to: %s\n", wasmDest)
 		}
@@ -68,27 +69,41 @@ generated code is a drop-in skeleton for a complete wazero binding.`,
 	},
 }
 
-// copyWasm locates HavokPhysics.wasm relative to the input .d.ts file and
-// copies it to dest.  Returns an error (informational) if wasm cannot be found.
-func copyWasm(inputDts, dest string) error {
-	inputDir := filepath.Dir(inputDts)
-	candidates := []string{
-		filepath.Join(inputDir, "HavokPhysics.wasm"),
-		filepath.Join(inputDir, "lib", "esm", "HavokPhysics.wasm"),
-		filepath.Join(inputDir, "lib", "umd", "HavokPhysics.wasm"),
-		filepath.Join(inputDir, "..", "lib", "esm", "HavokPhysics.wasm"),
-		filepath.Join(inputDir, "..", "lib", "umd", "HavokPhysics.wasm"),
-	}
-
+// copyWasm copies HavokPhysics.wasm to dest.
+// It first checks explicitWasm (from --wasm flag), then searches near inputDts.
+// Returns an error (informational) if wasm cannot be found by either method.
+func copyWasm(inputDts, explicitWasm, dest string) error {
 	var src string
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			src = c
-			break
+
+	// 1. Use explicitly provided path if given and the file exists.
+	if explicitWasm != "" {
+		if _, err := os.Stat(explicitWasm); err == nil {
+			src = explicitWasm
+		} else {
+			fmt.Printf("Warning: --wasm %s not found, falling back to auto-search\n", explicitWasm)
 		}
 	}
+
+	// 2. Auto-search relative to the input .d.ts file.
 	if src == "" {
-		return fmt.Errorf("HavokPhysics.wasm not found near %s", inputDts)
+		inputDir := filepath.Dir(inputDts)
+		candidates := []string{
+			filepath.Join(inputDir, "HavokPhysics.wasm"),
+			filepath.Join(inputDir, "lib", "esm", "HavokPhysics.wasm"),
+			filepath.Join(inputDir, "lib", "umd", "HavokPhysics.wasm"),
+			filepath.Join(inputDir, "..", "lib", "esm", "HavokPhysics.wasm"),
+			filepath.Join(inputDir, "..", "lib", "umd", "HavokPhysics.wasm"),
+		}
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				src = c
+				break
+			}
+		}
+	}
+
+	if src == "" {
+		return fmt.Errorf("HavokPhysics.wasm not found (tried --wasm flag and auto-search near %s)", inputDts)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
@@ -124,4 +139,6 @@ func init() {
 		"Directory for generated files")
 	convertCmd.Flags().StringVarP(&convertPackage, "package", "p", "generated",
 		"Go package name for generated files")
+	convertCmd.Flags().StringVarP(&convertWasm, "wasm", "w", "",
+		"Path to HavokPhysics.wasm to copy into havok/wasm/ (auto-searched if not set)")
 }
