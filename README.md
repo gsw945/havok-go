@@ -1,4 +1,6 @@
 # havok-go
+[![Go Reference](https://pkg.go.dev/badge/github.com/gsw945/havok-go/havok.svg)](https://pkg.go.dev/github.com/gsw945/havok-go/havok) [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/license/MIT)
+
 
 Go 版 [Havok 物理引擎](https://github.com/BabylonJS/havok) 绑定，通过 [wazero](https://github.com/tetratelabs/wazero)（纯 Go WebAssembly 运行时）包装 `HavokPhysics.wasm`，无 CGo 依赖。
 
