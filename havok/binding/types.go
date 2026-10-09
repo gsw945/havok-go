@@ -35,15 +35,21 @@ type HP_DebugGeometryId [1]uint64
 // Enum Types
 // =============================================================================
 
-// Result is the return status of an HP_ operation
+// Result is the return status of an HP_ operation.
+//
+// IMPORTANT: the numeric values are HRESULT codes taken from the wasm module's
+// embind registration — they are NOT the 0,1,2,3,4 order used in
+// HavokPhysics.d.ts. Using the .d.ts order silently corrupts every call that
+// checks the result (for example MotionType would be off by one and bodies
+// would end up KINEMATIC instead of DYNAMIC).
 type Result int32
 
 const (
-	Result_OK             Result = 0
-	Result_FAIL           Result = 1
-	Result_INVALIDHANDLE  Result = 2
-	Result_INVALIDARGS    Result = 3
-	Result_NOTIMPLEMENTED Result = 4
+	Result_OK             Result = 0           // S_OK
+	Result_FAIL           Result = -2147467259 // 0x80004005 E_FAIL
+	Result_INVALIDHANDLE  Result = -2147024890 // 0x80070006 E_HANDLE
+	Result_INVALIDARGS    Result = -2147024809 // 0x80070057 E_INVALIDARG
+	Result_NOTIMPLEMENTED Result = -2147467263 // 0x80004001 E_NOTIMPL
 )
 
 func (r Result) IsOK() bool { return r == Result_OK }
@@ -64,21 +70,23 @@ func (r Result) Error() string {
 	}
 }
 
-// MotionType controls how a body moves in the simulation
+// MotionType controls how a body moves in the simulation.
+// Values come from the wasm's embind registration (note: NOT 0,1,2).
 type MotionType int32
 
 const (
-	MotionType_STATIC    MotionType = 0
-	MotionType_KINEMATIC MotionType = 1
-	MotionType_DYNAMIC   MotionType = 2
+	MotionType_STATIC    MotionType = 1
+	MotionType_KINEMATIC MotionType = 2
+	MotionType_DYNAMIC   MotionType = 4
 )
 
-// ShapeType distinguishes container vs collider shapes
+// ShapeType distinguishes container vs collider shapes.
+// Values come from the wasm's embind registration (note: NOT 0,1).
 type ShapeType int32
 
 const (
-	ShapeType_COLLIDER  ShapeType = 0
-	ShapeType_CONTAINER ShapeType = 1
+	ShapeType_COLLIDER  ShapeType = 1
+	ShapeType_CONTAINER ShapeType = 2
 )
 
 // ActivationState reflects whether a body is simulating
@@ -122,15 +130,17 @@ const (
 	MaterialCombine_MULTIPLY        MaterialCombine = 4
 )
 
-// EventType describes the kind of a physics event
+// EventType describes the kind of a physics event. The values are bit flags
+// (OR them together for HP_Body_SetEventMask); the wasm registers
+// COLLISION_STARTED/CONTINUED/FINISHED as 1/2/4.
 type EventType int32
 
 const (
-	EventType_COLLISION_STARTED   EventType = 0
-	EventType_COLLISION_CONTINUED EventType = 1
-	EventType_COLLISION_FINISHED  EventType = 2
-	EventType_TRIGGER_ENTERED     EventType = 3
-	EventType_TRIGGER_EXITED      EventType = 4
+	EventType_COLLISION_STARTED   EventType = 1
+	EventType_COLLISION_CONTINUED EventType = 2
+	EventType_COLLISION_FINISHED  EventType = 4
+	EventType_TRIGGER_ENTERED     EventType = 8
+	EventType_TRIGGER_EXITED      EventType = 16
 )
 
 // ConstraintAxisLimitMode describes constraint axis limit behaviour
@@ -197,6 +207,17 @@ type MassProperties struct {
 type QTransform struct {
 	Translation Vector3
 	Rotation    Quaternion
+}
+
+// Rotation is a 3x3 orientation matrix stored as three column vectors.
+// Memory layout: 3 * Vector3 = 36 bytes (WASM f32 layout)
+type Rotation [3]Vector3
+
+// Transform is a position + orientation matrix (no scale).
+// Memory layout: Vector3(12) + Rotation(36) = 48 bytes (WASM f32 layout)
+type Transform struct {
+	Translation Vector3
+	Rotation    Rotation
 }
 
 // QSTransform is a position + rotation + scale

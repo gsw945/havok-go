@@ -45,6 +45,14 @@ type Method struct {
 	Name       string
 	Params     []Param
 	ReturnType TSType
+
+	// WasmName is the actual export name in HavokPhysics.wasm. It usually
+	// equals Name, but the hand-maintained .d.ts occasionally diverges
+	// (e.g. HP_Shape_PathIterator_GetNext vs HP_ShapePathIterator_GetNext).
+	WasmName string
+	// Wasm is the raw export signature resolved from the wasm binary.
+	// nil when the method is not exported (it is then skipped).
+	Wasm *FuncSig
 }
 
 // Schema is the full parse result from a d.ts file.

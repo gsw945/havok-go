@@ -17,16 +17,18 @@ var exampleWasm string
 var exampleCmd = &cobra.Command{
 	Use:   "example",
 	Short: "Load HavokPhysics.wasm and run a physics demo",
-	Long: `example instantiates the Havok physics engine (via wazero) and runs
-a short simulation:
+	Long: `example instantiates the Havok physics engine (via wazero) and runs a
+simulation whose setup mirrors the Babylon.js reference scene:
 
-  1. HP_GetStatistics  – verify WASM is alive
-  2. HP_World_Create   – create a physics world
-  3. HP_Body_Create    – create two bodies
-  4. HP_Shape_CreateSphere – create a sphere shape
-  5. HP_Body_SetShape / SetMotionType / World_AddBody
-  6. HP_World_SetGravity + Step loop (5 steps)
-  7. Clean up (Release)`,
+  1. HP_GetStatistics        – verify the WASM is alive
+  2. HP_World_Create         – create a physics world
+  3. HP_World_SetGravity     – gravity (0, -9.81, 0)
+  4. HP_World_SetIdealStepTime – fixed 1/60 s solver step (as the front-end does)
+  5. static ground box (100 x 1 x 100) + dynamic 1 m cube, mass 1,
+     restitution 0.2, friction 0.2, linear damping 5, angular damping 50
+  6. step the world and print the trajectory so it can be compared with the
+     browser output
+  7. clean up (Release)`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
 		return runExample(ctx, exampleWasm)
@@ -70,15 +72,13 @@ func runExample(ctx context.Context, wasmFlag string) error {
 	}
 	fmt.Printf("[HP_GetStatistics] result=%s\n", res.Error())
 	if res.IsOK() {
-		fmt.Printf("  NumBodies=%d  NumShapes=%d  NumConstraints=%d\n",
-			stats.NumBodies, stats.NumShapes, stats.NumConstraints)
-		fmt.Printf("  NumWorlds=%d  NumQueryCollectors=%d\n",
-			stats.NumWorlds, stats.NumQueryCollectors)
+		fmt.Printf("  NumBodies=%d  NumShapes=%d  NumConstraints=%d  NumWorlds=%d\n",
+			stats.NumBodies, stats.NumShapes, stats.NumConstraints, stats.NumWorlds)
 	}
 	fmt.Println()
 
 	// -------------------------------------------------------------------------
-	// Step 2: Create world
+	// Step 2: Create world, configure gravity and solver step
 	// -------------------------------------------------------------------------
 	wRes, worldId, err := hp.HP_World_Create(ctx)
 	if err != nil {
@@ -89,100 +89,247 @@ func runExample(ctx context.Context, wasmFlag string) error {
 		return fmt.Errorf("HP_World_Create failed: %s", wRes.Error())
 	}
 	defer func() {
-		if res, err := hp.HP_World_Release(ctx, worldId); err != nil {
+		if r, err := hp.HP_World_Release(ctx, worldId); err != nil {
 			fmt.Printf("HP_World_Release error: %v\n", err)
 		} else {
-			fmt.Printf("[HP_World_Release] result=%s\n", res.Error())
+			fmt.Printf("[HP_World_Release] result=%s\n", r.Error())
 		}
 	}()
 
-	// Set gravity to (0, -9.81, 0)
 	if gRes, err := hp.HP_World_SetGravity(ctx, worldId, havok.Vector3{0, -9.81, 0}); err != nil {
 		return fmt.Errorf("HP_World_SetGravity: %w", err)
 	} else {
-		fmt.Printf("[HP_World_SetGravity] result=%s\n", gRes.Error())
+		fmt.Printf("[HP_World_SetGravity] result=%s  g=(0, -9.81, 0)\n", gRes.Error())
 	}
+	// Fixed solver step keeps the effective stiffness identical to a browser
+	// running Babylon's scene at a locked 60 Hz physics rate.
+	const dt = 1.0 / 60.0
+	if r, err := hp.HP_World_SetIdealStepTime(ctx, worldId, dt); err != nil {
+		return fmt.Errorf("HP_World_SetIdealStepTime: %w", err)
+	} else {
+		fmt.Printf("[HP_World_SetIdealStepTime] result=%s  dt=%.5f\n", r.Error(), dt)
+	}
+	fmt.Println()
 
 	// -------------------------------------------------------------------------
-	// Step 3: Create a dynamic body with a sphere shape
+	// Step 3: Static ground box (top face at y = 0)
 	// -------------------------------------------------------------------------
-	bRes, bodyId, err := hp.HP_Body_Create(ctx)
+	groundRes, groundShape, err := hp.HP_Shape_CreateBox(ctx,
+		havok.Vector3{0, -0.5, 0},
+		havok.Quaternion{0, 0, 0, 1},
+		havok.Vector3{100, 1, 100})
+	if err != nil {
+		return fmt.Errorf("HP_Shape_CreateBox(ground): %w", err)
+	}
+	if !groundRes.IsOK() {
+		return fmt.Errorf("ground shape failed: %s", groundRes.Error())
+	}
+	defer hp.HP_Shape_Release(ctx, groundShape) //nolint:errcheck
+	if r, err := hp.HP_Shape_SetMaterial(ctx, groundShape, havok.PhysicsMaterial{
+		StaticFriction: 0.6, DynamicFriction: 0.6, Restitution: 0.05,
+	}); err != nil {
+		return fmt.Errorf("HP_Shape_SetMaterial(ground): %w", err)
+	} else if !r.IsOK() {
+		return fmt.Errorf("ground material failed: %s", r.Error())
+	}
+	groundRes2, groundBody, err := hp.HP_Body_Create(ctx)
+	if err != nil {
+		return fmt.Errorf("HP_Body_Create(ground): %w", err)
+	}
+	if !groundRes2.IsOK() {
+		return fmt.Errorf("ground body failed: %s", groundRes2.Error())
+	}
+	defer hp.HP_Body_Release(ctx, groundBody) //nolint:errcheck
+	if r, err := hp.HP_Body_SetShape(ctx, groundBody, groundShape); err != nil {
+		return err
+	} else if !r.IsOK() {
+		return fmt.Errorf("ground SetShape failed: %s", r.Error())
+	}
+	if r, err := hp.HP_Body_SetMotionType(ctx, groundBody, havok.MotionType_STATIC); err != nil {
+		return err
+	} else if !r.IsOK() {
+		return fmt.Errorf("ground SetMotionType failed: %s", r.Error())
+	}
+	if r, err := hp.HP_World_AddBody(ctx, worldId, groundBody, false); err != nil {
+		return err
+	} else if !r.IsOK() {
+		return fmt.Errorf("ground AddBody failed: %s", r.Error())
+	}
+	fmt.Printf("[ground] static box 100x1x100 at (0,-0.5,0) added\n")
+
+	// -------------------------------------------------------------------------
+	// Step 4: Dynamic 1 m cube — same parameters as the Babylon.js player
+	// -------------------------------------------------------------------------
+	const (
+		cubeSize    = 1.0
+		cubeMass    = 1.0
+		startHeight = 2.0
+	)
+	cubeRes, cubeShape, err := hp.HP_Shape_CreateBox(ctx,
+		havok.Vector3{0, 0, 0},
+		havok.Quaternion{0, 0, 0, 1},
+		havok.Vector3{cubeSize, cubeSize, cubeSize})
+	if err != nil {
+		return fmt.Errorf("HP_Shape_CreateBox(cube): %w", err)
+	}
+	if !cubeRes.IsOK() {
+		return fmt.Errorf("cube shape failed: %s", cubeRes.Error())
+	}
+	defer hp.HP_Shape_Release(ctx, cubeShape) //nolint:errcheck
+	if r, err := hp.HP_Shape_SetMaterial(ctx, cubeShape, havok.PhysicsMaterial{
+		StaticFriction: 0.2, DynamicFriction: 0.2, Restitution: 0.2,
+	}); err != nil {
+		return fmt.Errorf("HP_Shape_SetMaterial(cube): %w", err)
+	} else if !r.IsOK() {
+		return fmt.Errorf("cube material failed: %s", r.Error())
+	}
+
+	bodyRes, bodyId, err := hp.HP_Body_Create(ctx)
 	if err != nil {
 		return fmt.Errorf("HP_Body_Create: %w", err)
 	}
-	fmt.Printf("[HP_Body_Create] result=%s  bodyId=%d\n", bRes.Error(), bodyId[0])
-	if !bRes.IsOK() {
-		return fmt.Errorf("HP_Body_Create failed: %s", bRes.Error())
+	if !bodyRes.IsOK() {
+		return fmt.Errorf("HP_Body_Create failed: %s", bodyRes.Error())
 	}
-	defer func() {
-		if res, err := hp.HP_Body_Release(ctx, bodyId); err != nil {
-			fmt.Printf("HP_Body_Release error: %v\n", err)
-		} else {
-			fmt.Printf("[HP_Body_Release] result=%s\n", res.Error())
-		}
-	}()
-
-	// Create a sphere shape at origin, radius 0.5
-	sRes, shapeId, err := hp.HP_Shape_CreateSphere(ctx, havok.Vector3{0, 0, 0}, 0.5)
-	if err != nil {
-		return fmt.Errorf("HP_Shape_CreateSphere: %w", err)
+	defer hp.HP_Body_Release(ctx, bodyId) //nolint:errcheck
+	if r, err := hp.HP_Body_SetShape(ctx, bodyId, cubeShape); err != nil {
+		return err
+	} else if !r.IsOK() {
+		return fmt.Errorf("cube SetShape failed: %s", r.Error())
 	}
-	fmt.Printf("[HP_Shape_CreateSphere] result=%s  shapeId=%d\n", sRes.Error(), shapeId[0])
-	if !sRes.IsOK() {
-		return fmt.Errorf("HP_Shape_CreateSphere failed: %s", sRes.Error())
-	}
-	defer func() {
-		if res, err := hp.HP_Shape_Release(ctx, shapeId); err != nil {
-			fmt.Printf("HP_Shape_Release error: %v\n", err)
-		} else {
-			fmt.Printf("[HP_Shape_Release] result=%s\n", res.Error())
-		}
-	}()
-
-	// Attach shape to body
-	if r, err := hp.HP_Body_SetShape(ctx, bodyId, shapeId); err != nil {
-		return fmt.Errorf("HP_Body_SetShape: %w", err)
-	} else {
-		fmt.Printf("[HP_Body_SetShape] result=%s\n", r.Error())
-	}
-
-	// Make it dynamic
 	if r, err := hp.HP_Body_SetMotionType(ctx, bodyId, havok.MotionType_DYNAMIC); err != nil {
-		return fmt.Errorf("HP_Body_SetMotionType: %w", err)
-	} else {
-		fmt.Printf("[HP_Body_SetMotionType] result=%s\n", r.Error())
+		return err
+	} else if !r.IsOK() {
+		return fmt.Errorf("cube SetMotionType failed: %s", r.Error())
 	}
 
-	// Add to world
-	if r, err := hp.HP_World_AddBody(ctx, worldId, bodyId, true); err != nil {
-		return fmt.Errorf("HP_World_AddBody: %w", err)
-	} else {
-		fmt.Printf("[HP_World_AddBody] result=%s\n", r.Error())
+	// Explicit mass properties (a solid 1 m cube: I = m*(a^2+b^2)/12 = 1/6).
+	inertia := cubeMass * (cubeSize*cubeSize + cubeSize*cubeSize) / 12.0
+	if r, err := hp.HP_Body_SetMassProperties(ctx, bodyId, havok.MassProperties{
+		CenterOfMass:       havok.Vector3{0, 0, 0},
+		Mass:               cubeMass,
+		InertiaTensorDiag:  havok.Vector3{inertia, inertia, inertia},
+		InertiaOrientation: havok.Quaternion{0, 0, 0, 1},
+	}); err != nil {
+		return err
+	} else if !r.IsOK() {
+		return fmt.Errorf("cube SetMassProperties failed: %s", r.Error())
 	}
-	fmt.Println()
+
+	// Damping — identical to the front-end player aggregate.
+	if r, err := hp.HP_Body_SetLinearDamping(ctx, bodyId, 5.0); err != nil {
+		return err
+	} else if !r.IsOK() {
+		return fmt.Errorf("SetLinearDamping failed: %s", r.Error())
+	}
+	if r, err := hp.HP_Body_SetAngularDamping(ctx, bodyId, 50.0); err != nil {
+		return err
+	} else if !r.IsOK() {
+		return fmt.Errorf("SetAngularDamping failed: %s", r.Error())
+	}
+
+	// Initial transform: 5 m above the ground, axis-aligned.
+	if r, err := hp.HP_Body_SetQTransform(ctx, bodyId, havok.QTransform{
+		Translation: havok.Vector3{0, startHeight, 0},
+		Rotation:    havok.Quaternion{0, 0, 0, 1},
+	}); err != nil {
+		return err
+	} else if !r.IsOK() {
+		return fmt.Errorf("cube SetQTransform failed: %s", r.Error())
+	}
+
+	if r, err := hp.HP_World_AddBody(ctx, worldId, bodyId, false); err != nil {
+		return err
+	} else if !r.IsOK() {
+		return fmt.Errorf("cube AddBody failed: %s", r.Error())
+	}
+	fmt.Printf("[cube] dynamic box %.0fx%.0fx%.0f, mass=%.0f, at (0,%.0f,0)\n\n",
+		cubeSize, cubeSize, cubeSize, cubeMass, startHeight)
 
 	// -------------------------------------------------------------------------
-	// Step 4: Simulate 5 steps
+	// Step 5: Free fall, landing and rest
 	// -------------------------------------------------------------------------
-	const dt = 1.0 / 60.0
-	fmt.Printf("Simulating 5 steps (dt=%.4f s)…\n", dt)
-	for i := range 5 {
+	fmt.Printf("Simulating 180 steps (dt=%.5f s) — free fall, landing, rest:\n", dt)
+	fmt.Printf("  %4s  %8s   %-26s %-26s\n", "step", "time", "position (x,y,z)", "linear velocity")
+	printState := func(step int, label string) error {
+		r1, pos, err := hp.HP_Body_GetPosition(ctx, bodyId)
+		if err != nil {
+			return err
+		}
+		r2, vel, err := hp.HP_Body_GetLinearVelocity(ctx, bodyId)
+		if err != nil {
+			return err
+		}
+		if !r1.IsOK() || !r2.IsOK() {
+			return fmt.Errorf("GetPosition/GetLinearVelocity returned %s / %s", r1.Error(), r2.Error())
+		}
+		fmt.Printf("  %4d  %8.3f   (%7.3f, %7.3f, %7.3f)   (%7.3f, %7.3f, %7.3f) %s\n",
+			step, float64(step)*dt, pos[0], pos[1], pos[2], vel[0], vel[1], vel[2], label)
+		return nil
+	}
+	if err := printState(0, ""); err != nil {
+		return err
+	}
+	for i := 1; i <= 180; i++ {
 		if r, err := hp.HP_World_Step(ctx, worldId, dt); err != nil {
 			return fmt.Errorf("HP_World_Step[%d]: %w", i, err)
 		} else if !r.IsOK() {
-			fmt.Printf("  step %d: result=%s\n", i, r.Error())
-		} else {
-			fmt.Printf("  step %d: OK\n", i)
+			return fmt.Errorf("HP_World_Step[%d] result=%s", i, r.Error())
+		}
+		if i%15 == 0 {
+			if err := printState(i, ""); err != nil {
+				return err
+			}
 		}
 	}
-	fmt.Println()
 
-	// Stats after simulation
+	_, restPos, err := hp.HP_Body_GetPosition(ctx, bodyId)
+	if err != nil {
+		return err
+	}
+	expected := cubeSize / 2.0
+	fmt.Printf("\nResting height y=%.4f (expected ~%.2f, |error|=%.4f)\n",
+		restPos[1], expected, abs64(restPos[1]-expected))
+
+	// -------------------------------------------------------------------------
+	// Step 6: Horizontal impulse — same "applyImpulse" call the browser uses
+	// -------------------------------------------------------------------------
+	fmt.Printf("\nApplying impulse (8, 0, 0) at the centre of mass…\n")
+	if r, err := hp.HP_Body_ApplyImpulse(ctx, bodyId, havok.Vector3{0, 0, 0}, havok.Vector3{8, 0, 0}); err != nil {
+		return err
+	} else if !r.IsOK() {
+		return fmt.Errorf("ApplyImpulse failed: %s", r.Error())
+	}
+	if _, vel, err := hp.HP_Body_GetLinearVelocity(ctx, bodyId); err == nil {
+		fmt.Printf("  velocity immediately after impulse: (%.3f, %.3f, %.3f)  [expect x ~8]\n",
+			vel[0], vel[1], vel[2])
+	}
+	for i := 0; i < 60; i++ {
+		if r, err := hp.HP_World_Step(ctx, worldId, dt); err != nil {
+			return err
+		} else if !r.IsOK() {
+			return fmt.Errorf("HP_World_Step failed: %s", r.Error())
+		}
+	}
+	if err := printState(240, "after 60 more steps"); err != nil {
+		return err
+	}
+
+	// -------------------------------------------------------------------------
+	// Final statistics
+	// -------------------------------------------------------------------------
 	if res, stats, err := hp.HP_GetStatistics(ctx); err == nil && res.IsOK() {
-		fmt.Printf("[HP_GetStatistics after sim] NumBodies=%d  NumShapes=%d  NumWorlds=%d\n",
+		fmt.Printf("\n[HP_GetStatistics after sim] NumBodies=%d  NumShapes=%d  NumWorlds=%d\n",
 			stats.NumBodies, stats.NumShapes, stats.NumWorlds)
 	}
 
 	fmt.Println("\nDemo complete.")
 	return nil
+}
+
+func abs64(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }

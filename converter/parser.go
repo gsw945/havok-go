@@ -127,7 +127,7 @@ func (s *Schema) parseTypeAlias(n *sitter.Node, src []byte) {
 	if valueNode.Kind() == "tuple_type" {
 		for i := range valueNode.ChildCount() {
 			el := valueNode.Child(i)
-			if el.IsNamed() {
+			if el.IsNamed() && !isCommentNode(el) {
 				alias.Tuple = append(alias.Tuple, s.resolveType(el, src))
 			}
 		}
@@ -211,7 +211,7 @@ func (s *Schema) parseMethodSignature(n *sitter.Node, src []byte) {
 					// type annotation node wraps the actual type
 					for j := range tn.ChildCount() {
 						tc := tn.Child(j)
-						if tc.IsNamed() {
+						if tc.IsNamed() && !isCommentNode(tc) {
 							pType = s.resolveType(tc, src)
 							break
 						}
@@ -226,7 +226,7 @@ func (s *Schema) parseMethodSignature(n *sitter.Node, src []byte) {
 	if retNode := n.ChildByFieldName("return_type"); retNode != nil {
 		for i := range retNode.ChildCount() {
 			tc := retNode.Child(i)
-			if tc.IsNamed() {
+			if tc.IsNamed() && !isCommentNode(tc) {
 				m.ReturnType = s.resolveType(tc, src)
 				break
 			}
@@ -273,7 +273,7 @@ func (s *Schema) resolveType(n *sitter.Node, src []byte) TSType {
 		t := TSType{Raw: text, Kind: KindTupleAlias}
 		for i := range n.ChildCount() {
 			el := n.Child(i)
-			if el.IsNamed() {
+			if el.IsNamed() && !isCommentNode(el) {
 				t.Elements = append(t.Elements, s.resolveType(el, src))
 			}
 		}
@@ -281,6 +281,13 @@ func (s *Schema) resolveType(n *sitter.Node, src []byte) TSType {
 	}
 
 	return TSType{Raw: text, Kind: KindUnknown}
+}
+
+// isCommentNode reports whether a tree-sitter node is a comment. The d.ts file
+// documents tuple fields with inline /* ... */ comments, which are named nodes
+// and would otherwise be mistaken for tuple elements.
+func isCommentNode(n *sitter.Node) bool {
+	return n.Kind() == "comment"
 }
 
 // -----------------------------------------------------------------------------

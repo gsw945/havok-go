@@ -16,3 +16,6 @@
 
 havok-go
 havok-go.exe
+
+# Coding Agent files
+.workbuddy-ai/

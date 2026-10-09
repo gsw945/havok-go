@@ -27,11 +27,12 @@ var convertCmd = &cobra.Command{
 extracts every exported type alias, enum, and method from the
 HavokPhysicsWithBindings interface, then emits two files:
 
-  <output>/types_gen.go    – type declarations
-  <output>/bindings_gen.go – function stubs with TODO bodies
+  <output>/types_gen.go    – type declarations (only with --skip-types=false)
+  <output>/bindings_gen.go – complete wazero bindings
 
-Each stub follows the emscripten sret calling convention so the
-generated code is a drop-in skeleton for a complete wazero binding.`,
+The low-level calling convention (out-pointer placement, scalar widths) is read
+from the shipped HavokPhysics.wasm, not guessed from the .d.ts. Methods that the
+wasm does not export are reported and skipped.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if convertInput == "" {
 			return fmt.Errorf("--input is required")
@@ -50,6 +51,18 @@ generated code is a drop-in skeleton for a complete wazero binding.`,
 		fmt.Printf("Found %d enums, %d type aliases, %d methods\n",
 			len(schema.Enums), len(schema.Types), len(schema.Methods))
 
+		// Locate the wasm first: its export signatures drive the generated ABI.
+		wasmSrc, err := locateWasm(convertInput, convertWasm)
+		if err != nil {
+			return fmt.Errorf("cannot generate bindings without HavokPhysics.wasm: %w", err)
+		}
+		fmt.Printf("Reading wasm signatures from %s …\n", wasmSrc)
+		sigs, err := converter.ParseWasmSignatures(wasmSrc)
+		if err != nil {
+			return fmt.Errorf("wasm parse error: %w", err)
+		}
+		fmt.Printf("Wasm exports %d functions\n", len(sigs))
+
 		opts := converter.DefaultOptions()
 		opts.PackageName = convertPackage
 		opts.OutputDir = convertOutput
@@ -57,17 +70,21 @@ generated code is a drop-in skeleton for a complete wazero binding.`,
 		opts.ReceiverType = convertReceiver
 		opts.BindingPkg = convertBindingPkg
 
-		if err := converter.Generate(schema, opts); err != nil {
+		if err := converter.Generate(schema, sigs, opts); err != nil {
 			return fmt.Errorf("generate error: %w", err)
 		}
 
 		typesPath := convertOutput + "/" + opts.TypesFile
 		bindPath := convertOutput + "/" + opts.BindingFile
-		fmt.Printf("Generated:\n  %s\n  %s\n", typesPath, bindPath)
+		if opts.SkipTypes {
+			fmt.Printf("Generated:\n  %s\n", bindPath)
+		} else {
+			fmt.Printf("Generated:\n  %s\n  %s\n", typesPath, bindPath)
+		}
 
-		// Try to copy HavokPhysics.wasm into havok/wasm/ alongside the generated Go files.
+		// Copy HavokPhysics.wasm into havok/wasm/ alongside the generated Go files.
 		wasmDest := filepath.Join(filepath.Dir(convertOutput), "wasm", "HavokPhysics.wasm")
-		if err := copyWasm(convertInput, convertWasm, wasmDest); err != nil {
+		if err := copyWasmFile(wasmSrc, wasmDest); err != nil {
 			fmt.Printf("Note: %v\n", err)
 			fmt.Printf("      Copy HavokPhysics.wasm manually to: %s\n", wasmDest)
 		}
@@ -75,43 +92,34 @@ generated code is a drop-in skeleton for a complete wazero binding.`,
 	},
 }
 
-// copyWasm copies HavokPhysics.wasm to dest.
+// locateWasm resolves the HavokPhysics.wasm source path.
 // It first checks explicitWasm (from --wasm flag), then searches near inputDts.
-// Returns an error (informational) if wasm cannot be found by either method.
-func copyWasm(inputDts, explicitWasm, dest string) error {
-	var src string
-
-	// 1. Use explicitly provided path if given and the file exists.
+func locateWasm(inputDts, explicitWasm string) (string, error) {
 	if explicitWasm != "" {
 		if _, err := os.Stat(explicitWasm); err == nil {
-			src = explicitWasm
-		} else {
-			fmt.Printf("Warning: --wasm %s not found, falling back to auto-search\n", explicitWasm)
+			return explicitWasm, nil
 		}
+		fmt.Printf("Warning: --wasm %s not found, falling back to auto-search\n", explicitWasm)
 	}
 
-	// 2. Auto-search relative to the input .d.ts file.
-	if src == "" {
-		inputDir := filepath.Dir(inputDts)
-		candidates := []string{
-			filepath.Join(inputDir, "HavokPhysics.wasm"),
-			filepath.Join(inputDir, "lib", "esm", "HavokPhysics.wasm"),
-			filepath.Join(inputDir, "lib", "umd", "HavokPhysics.wasm"),
-			filepath.Join(inputDir, "..", "lib", "esm", "HavokPhysics.wasm"),
-			filepath.Join(inputDir, "..", "lib", "umd", "HavokPhysics.wasm"),
-		}
-		for _, c := range candidates {
-			if _, err := os.Stat(c); err == nil {
-				src = c
-				break
-			}
+	inputDir := filepath.Dir(inputDts)
+	candidates := []string{
+		filepath.Join(inputDir, "HavokPhysics.wasm"),
+		filepath.Join(inputDir, "lib", "esm", "HavokPhysics.wasm"),
+		filepath.Join(inputDir, "lib", "umd", "HavokPhysics.wasm"),
+		filepath.Join(inputDir, "..", "lib", "esm", "HavokPhysics.wasm"),
+		filepath.Join(inputDir, "..", "lib", "umd", "HavokPhysics.wasm"),
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c, nil
 		}
 	}
+	return "", fmt.Errorf("HavokPhysics.wasm not found (tried --wasm flag and auto-search near %s)", inputDts)
+}
 
-	if src == "" {
-		return fmt.Errorf("HavokPhysics.wasm not found (tried --wasm flag and auto-search near %s)", inputDts)
-	}
-
+// copyWasmFile copies src to dest, creating parent directories as needed.
+func copyWasmFile(src, dest string) error {
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return fmt.Errorf("cannot create wasm directory: %w", err)
 	}
